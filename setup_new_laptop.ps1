@@ -7,14 +7,6 @@ $ErrorActionPreference = 'Stop'
 $ProjectDir = Split-Path -Parent $PSCommandPath
 $VenvPython = Join-Path $ProjectDir '.venv\Scripts\python.exe'
 
-function Test-Python311 {
-    param([string[]]$Command)
-    $executable = $Command[0]
-    $pythonArgs = if ($Command.Length -gt 1) { $Command[1..($Command.Length - 1)] } else { @() }
-    $version = & $executable @pythonArgs -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-    return $LASTEXITCODE -eq 0 -and "$version".Trim() -eq '3.11'
-}
-
 function Copy-DataDirectory {
     param([string]$Source, [string]$Destination)
     New-Item -ItemType Directory -Force -Path $Destination | Out-Null
@@ -25,13 +17,17 @@ function Copy-DataDirectory {
 }
 
 if (Get-Command py -ErrorAction SilentlyContinue) {
-    $PythonCommand = @('py', '-3.11')
+    # Keep these launcher calls explicit. Windows PowerShell 5.1 can drop native
+    # arguments when an executable and its arguments are invoked from arrays.
+    $version = & py -3.11 -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    $UsePythonLauncher = $true
 } elseif (Get-Command python -ErrorAction SilentlyContinue) {
-    $PythonCommand = @('python')
+    $version = & python -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+    $UsePythonLauncher = $false
 } else {
     throw 'Python 3.11 was not found. Install 64-bit Python 3.11, then rerun setup.'
 }
-if (-not (Test-Python311 $PythonCommand)) {
+if ($LASTEXITCODE -ne 0 -or "$version".Trim() -ne '3.11') {
     throw 'Python 3.11 is required. Install it from python.org, including the Python Launcher.'
 }
 
@@ -39,9 +35,11 @@ Push-Location $ProjectDir
 try {
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         Write-Host 'Creating the Python 3.11 virtual environment...'
-        $executable = $PythonCommand[0]
-        $pythonArgs = if ($PythonCommand.Length -gt 1) { $PythonCommand[1..($PythonCommand.Length - 1)] } else { @() }
-        & $executable @pythonArgs -m venv .venv
+        if ($UsePythonLauncher) {
+            & py -3.11 -m venv .venv
+        } else {
+            & python -m venv .venv
+        }
         if ($LASTEXITCODE -ne 0) { throw 'Failed to create the Python 3.11 virtual environment.' }
     }
     Write-Host 'Installing pinned dependencies...'
