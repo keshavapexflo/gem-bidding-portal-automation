@@ -10,7 +10,7 @@ $LogFile = Join-Path $LogDir 'daily_maintenance.log'
 
 Push-Location $ProjectDir
 try {
-    $arguments = @('.\portal_pipeline.py', 'maintain')
+    [string[]]$arguments = @('.\portal_pipeline.py', 'maintain')
     if ($ApplyExpiry) { $arguments += '--apply-expiry' }
     & $Python @arguments *>> $LogFile
     exit $LASTEXITCODE

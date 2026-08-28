@@ -65,8 +65,11 @@ try {
         Copy-DataDirectory -Source (Join-Path $SourceRoot 'chroma_db') -Destination (Join-Path $ProjectDir 'chroma_db')
     }
 
-    $allowEmpty = if (Test-Path -LiteralPath (Join-Path $ProjectDir 'bid_chunks.json')) { @() } else { @('--allow-empty') }
-    & $VenvPython .\validate_installation.py @allowEmpty
+    if (Test-Path -LiteralPath (Join-Path $ProjectDir 'bid_chunks.json')) {
+        & $VenvPython .\validate_installation.py
+    } else {
+        & $VenvPython .\validate_installation.py --allow-empty
+    }
     if ($LASTEXITCODE -ne 0) {
         throw 'Setup completed, but deployment validation failed. Review the messages above.'
     }
