@@ -9,9 +9,10 @@ $VenvPython = Join-Path $ProjectDir '.venv\Scripts\python.exe'
 
 function Test-Python311 {
     param([string[]]$Command)
+    $executable = $Command[0]
     $pythonArgs = if ($Command.Length -gt 1) { $Command[1..($Command.Length - 1)] } else { @() }
-    $version = & $Command[0] @pythonArgs -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
-    return $version -eq '3.11'
+    $version = & $executable @pythonArgs -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')" 2>$null
+    return $LASTEXITCODE -eq 0 -and "$version".Trim() -eq '3.11'
 }
 
 function Copy-DataDirectory {
@@ -38,8 +39,10 @@ Push-Location $ProjectDir
 try {
     if (-not (Test-Path -LiteralPath $VenvPython)) {
         Write-Host 'Creating the Python 3.11 virtual environment...'
+        $executable = $PythonCommand[0]
         $pythonArgs = if ($PythonCommand.Length -gt 1) { $PythonCommand[1..($PythonCommand.Length - 1)] } else { @() }
-        & $PythonCommand[0] @pythonArgs -m venv .venv
+        & $executable @pythonArgs -m venv .venv
+        if ($LASTEXITCODE -ne 0) { throw 'Failed to create the Python 3.11 virtual environment.' }
     }
     Write-Host 'Installing pinned dependencies...'
     & $VenvPython -m pip install --upgrade pip
