@@ -1,0 +1,18 @@
+.venv/
+__pycache__/
+.idea/
+*.py[cod]
+
+# Runtime corpus and indexes are transferred separately, never committed.
+downloads/
+bid_chunks.json
+bid_chunks.next.json
+chroma_db/
+static/
+backups/
+
+# Local logs and transient databases
+*.log
+*.tmp
+*.part
+boilerplate_*.sqlite3*
