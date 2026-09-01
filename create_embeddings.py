@@ -2,8 +2,9 @@
 
 The chunk export is intentionally read as a stream: the current file is
 large enough that ``json.load`` would need several gigabytes of memory.  Each
-batch is embedded with BAAI/bge-small-en-v1.5 and then upserted into Chroma,
-so rerunning this script safely resumes or refreshes existing chunk IDs.
+batch is embedded with BAAI/bge-small-en-v1.5 and then upserted into Chroma.
+Use ``--resume`` after an interrupted initial build to skip chunk IDs that are
+already present and embed only the missing chunks.
 
 Examples
 --------
@@ -14,6 +15,10 @@ Create/update the default collection::
 Try a small batch first::
 
     python create_embeddings.py --limit 100
+
+Resume an interrupted initial build::
+
+    python create_embeddings.py --resume
 
 Rebuild the collection from scratch (deletes the named collection)::
 
@@ -208,6 +213,14 @@ def build_embeddings(args: argparse.Namespace) -> int:
     if args.batch_size < 1:
         raise SystemExit("--batch-size must be at least 1.")
 
+    resume = bool(getattr(args, "resume", False))
+    if resume and args.reset:
+        raise SystemExit("Do not combine --resume with --reset; reset deletes the collection to resume.")
+    if resume and args.sync_file:
+        raise SystemExit(
+            "Do not combine --resume with --sync-file; incremental sync must update changed existing IDs."
+        )
+
     selected_chunk_ids: set[str] | None = None
     deleted_chunk_ids: list[str] = []
     if args.sync_file:
@@ -246,6 +259,16 @@ def build_embeddings(args: argparse.Namespace) -> int:
     # which supplies its own query vectors and does not use Chroma's default EF.
     collection = client.get_or_create_collection(name=args.collection)
 
+    existing_chunk_ids: set[str] = set()
+    if resume and collection.count():
+        print("Resume mode: loading existing chunk IDs from Chroma...", flush=True)
+        stored = collection.get(include=[])
+        existing_chunk_ids = {str(chunk_id) for chunk_id in stored.get("ids", [])}
+        print(
+            f"Resume mode: {len(existing_chunk_ids):,} existing chunk(s) will be skipped.",
+            flush=True,
+        )
+
     if selected_chunk_ids is not None and not selected_chunk_ids:
         for ids_to_delete in batched(deleted_chunk_ids, 1_000):
             collection.delete(ids=ids_to_delete)
@@ -275,6 +298,7 @@ def build_embeddings(args: argparse.Namespace) -> int:
     metadatas: list[dict[str, str | int | float | bool]] = []
     processed = 0
     skipped = 0
+    resume_skipped = 0
     seen_text_hash_by_id: dict[str, str] = {}
     boilerplate_hashes = load_boilerplate_hashes()
 
@@ -299,6 +323,15 @@ def build_embeddings(args: argparse.Namespace) -> int:
                     "with the current chunk schema before embedding."
                 )
             seen_text_hash_by_id[chunk_id] = clean_text_hash
+
+            if resume and chunk_id in existing_chunk_ids:
+                resume_skipped += 1
+                if resume_skipped % 10_000 == 0:
+                    print(
+                        f"Resume scan: skipped {resume_skipped:,} already-stored chunks",
+                        flush=True,
+                    )
+                continue
 
             raw_metadata = chunk.get("metadata")
             if not isinstance(raw_metadata, Mapping):
@@ -341,7 +374,8 @@ def build_embeddings(args: argparse.Namespace) -> int:
         print(f"Removed {len(deleted_chunk_ids):,} stale chunk(s) from Chroma", flush=True)
 
     print(
-        f"Complete. Processed {processed:,} chunks; skipped {skipped:,}. "
+        f"Complete. Processed {processed:,} new chunks; "
+        f"already present {resume_skipped:,}; skipped invalid/duplicate {skipped:,}. "
         f"Collection '{args.collection}' now contains {collection.count():,} chunks.",
         flush=True,
     )
@@ -362,6 +396,11 @@ def parse_args() -> argparse.Namespace:
         help="Only embed chunk IDs listed by gem_extract_and_chunks.py; also remove listed stale IDs.",
     )
     parser.add_argument("--reset", action="store_true", help="Delete the named collection before embedding")
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Skip chunk IDs already stored in Chroma and embed only missing chunks.",
+    )
     return parser.parse_args()
 
 

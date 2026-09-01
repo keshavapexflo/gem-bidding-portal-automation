@@ -47,6 +47,15 @@ only after reviewing the reports and taking a backup:
 The initial embedding job can be lengthy on a CPU. A CUDA-capable environment
 is recommended for a corpus with hundreds of thousands of chunks.
 
+If a standalone initial embedding run is interrupted, preserve `chroma_db` and
+resume by embedding only chunk IDs that are not already stored:
+
+```powershell
+.\.venv\Scripts\python.exe .\create_embeddings.py --batch-size 64 --resume
+```
+
+Do not combine `--resume` with `--reset` or `--sync-file`.
+
 ## Main commands
 
 - `initialize_phase1.ps1` - initial download, chunk, embed, boilerplate and lexical build.
