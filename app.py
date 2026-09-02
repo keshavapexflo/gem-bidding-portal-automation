@@ -239,7 +239,34 @@ st.markdown(
     .card-subtitle { color: #9daec8; font-size: 0.85rem; line-height: 2.25; margin-bottom: 0.9rem; }
     .card-text { color: #d5deed; font-size: 0.95rem; line-height: 1.6; background: #0d1422; padding: 0.9rem 1rem; border-radius: 9px; border-left: 3px solid #5c8fff; }
     .badge { border-radius: 999px; font-weight: 650; margin: 0 0.35rem 0.2rem 0; }
-    [data-testid="stTextInput"] input, [data-testid="stSelectbox"] div[data-baseweb="select"] > div, [data-testid="stDateInput"] input { border-radius: 9px !important; border-color: #3a4964 !important; background: #121b2a !important; }
+    [data-testid="stTextInput"] input,
+    [data-testid="stSelectbox"] div[data-baseweb="select"] > div,
+    [data-testid="stDateInput"] input {
+        border-radius: 9px !important;
+        border-color: #3a4964 !important;
+        background: #121b2a !important;
+        color: #f1f5f9 !important;
+        -webkit-text-fill-color: #f1f5f9 !important;
+        caret-color: #8fb1ff !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stTextInput"] input::placeholder,
+    [data-testid="stDateInput"] input::placeholder {
+        color: #94a3b8 !important;
+        -webkit-text-fill-color: #94a3b8 !important;
+        opacity: 1 !important;
+    }
+    [data-testid="stWidgetLabel"] p,
+    [data-testid="stTextInput"] label p,
+    [data-testid="stDateInput"] label p,
+    [data-testid="stSlider"] label p,
+    [data-testid="stCheckbox"] label p {
+        color: #cbd5e1 !important;
+    }
+    [data-baseweb="select"] *,
+    [data-testid="stSlider"] [data-testid="stMarkdownContainer"] p {
+        color: #e2e8f0 !important;
+    }
     [data-testid="stExpander"] { border: 1px solid #2d3d56; border-radius: 10px; }
 </style>
 """,
