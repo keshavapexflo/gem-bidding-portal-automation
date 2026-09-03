@@ -289,11 +289,13 @@ st.markdown(
 # Initialize Hybrid Retriever
 @st.cache_resource
 def get_retriever(chroma_path, collection_name, lexical_db_path=None):
-  return HybridRetriever(
+  ret = HybridRetriever(
       chroma_path=chroma_path,
       collection_name=collection_name,
       lexical_db_path=lexical_db_path,
   )
+  ret.warmup()
+  return ret
 
 
 # Sidebar configurations
@@ -321,22 +323,21 @@ st.sidebar.subheader("Index status")
 if retriever:
   try:
     state = retriever.lexical.state()
-    collection_count = retriever.collection.count()
+    chunk_count = state.get("chunk_count", 0)
     index_is_current = (
         state.get("collection") == collection_name
-        and state.get("chunk_count") == collection_count
+        and chunk_count > 0
     )
     if index_is_current:
       st.sidebar.success("Index is present & current.")
       st.sidebar.write(f"**Collection:** `{state.get('collection')}`")
-      st.sidebar.write(f"**Chunks:** `{state.get('chunk_count', 0):,}`")
+      st.sidebar.write(f"**Chunks:** `{chunk_count:,}`")
       st.sidebar.write(
           f"**Last Indexed:** `{state.get('indexed_at', 'Unknown')}`"
       )
     elif state:
       st.sidebar.warning(
-          f"Lexical index is stale ({state.get('chunk_count', 0):,} indexed / "
-          f"{collection_count:,} vectors). Rebuild it before relying on search."
+          f"Lexical index is incomplete ({chunk_count:,} indexed). Rebuild it before relying on search."
       )
     else:
       st.sidebar.warning(

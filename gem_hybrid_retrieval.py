@@ -43,7 +43,7 @@ GENERIC_QUERY_TERMS = frozenset({
     "a", "an", "and", "as", "at", "by", "clearly", "details", "for", "from", "generic",
     "goods", "in", "item", "items", "not", "of", "on", "or", "per", "product", "products",
     "requirement", "required", "service", "services", "specified", "the", "to", "use", "with",
-    "category",
+    "category", "gem",
 })
 
 
@@ -64,17 +64,19 @@ def _utcnow() -> str:
 
 
 def _fts_query(query: str) -> str:
-    """Turn free text into a safe FTS5 AND query.
+    """Turn free text into a safe FTS5 query.
 
     Quoting individual terms prevents punctuation such as ``GEM/2024/B``
-    from becoming FTS syntax.  Very short tokens are ignored because they
-    tend to create noise in procurement text ("of", "to", etc.).
+    from becoming FTS syntax. Very short tokens are ignored. Generic terms
+    (like 'gem' or 'for') are excluded if specific procurement terms exist.
     """
-    terms = re.findall(r"[\w.-]+", query, flags=re.UNICODE)
-    terms = [term.replace('"', '""') for term in terms if len(term) > 1]
-    # OR retains recall for conversational queries whose wording differs from
-    # a bid title (e.g. "for police force" vs "required by police"). BM25
-    # still ranks records containing more of the query terms above others.
+    raw_terms = re.findall(r"[\w.-]+", query, flags=re.UNICODE)
+    meaningful = [
+        term.replace('"', '""')
+        for term in raw_terms
+        if len(term) > 1 and term.lower() not in GENERIC_QUERY_TERMS
+    ]
+    terms = meaningful if meaningful else [term.replace('"', '""') for term in raw_terms if len(term) > 1]
     return " OR ".join(f'"{term}"' for term in terms)
 
 
@@ -129,6 +131,8 @@ class LexicalIndex:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         connection = sqlite3.connect(self.path)
         connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA mmap_size=268435456")
+        connection.execute("PRAGMA cache_size=-64000")
         return connection
 
     def initialise(self) -> None:
@@ -253,19 +257,27 @@ class LexicalIndex:
         # so common ministry/organisation filters still produce enough hits.
         fetch_limit = max(limit * 25, 250)
         with closing(self._connect()) as db:
-            rows = db.execute(
-                "SELECT f.chunk_id, f.text, m.metadata_json, "
-                "bm25(chunks_fts, 0.0, 3.0, 1.0) AS bm25_score "
-                "FROM chunks_fts f JOIN chunks_metadata m USING(chunk_id) "
-                "WHERE chunks_fts MATCH ? ORDER BY bm25_score LIMIT ?",
+            fts_rows = db.execute(
+                "SELECT chunk_id, text, bm25(chunks_fts, 0.0, 3.0, 1.0) AS bm25_score "
+                "FROM chunks_fts WHERE chunks_fts MATCH ? ORDER BY bm25_score LIMIT ?",
                 (fts_query, fetch_limit),
             ).fetchall()
+            if not fts_rows:
+                return []
+            chunk_ids = [r["chunk_id"] for r in fts_rows]
+            placeholders = ",".join("?" for _ in chunk_ids)
+            meta_rows = db.execute(
+                f"SELECT chunk_id, metadata_json FROM chunks_metadata WHERE chunk_id IN ({placeholders})",
+                chunk_ids,
+            ).fetchall()
+            meta_map = {r["chunk_id"]: json.loads(r["metadata_json"]) for r in meta_rows}
 
         results: list[SearchResult] = []
-        for row in rows:
-            metadata = json.loads(row["metadata_json"])
+        for row in fts_rows:
+            cid = row["chunk_id"]
+            metadata = meta_map.get(cid, {})
             if _matches_where(metadata, where):
-                results.append(SearchResult(row["chunk_id"], row["text"], metadata, float(row["bm25_score"])))
+                results.append(SearchResult(cid, row["text"], metadata, float(row["bm25_score"])))
                 if len(results) == limit:
                     break
         return results
@@ -485,19 +497,39 @@ class HybridRetriever:
             self._collection = client.get_collection(self.collection_name)
         return self._collection
 
-    def _embed_query(self, query: str) -> list[float]:
-        if self._query_model is None:
-            from sentence_transformers import SentenceTransformer
+    def _load_query_model(self) -> None:
+        if self._query_model is not None:
+            return
+        from sentence_transformers import SentenceTransformer
+        try:
+            self._query_model = SentenceTransformer(
+                self.query_model_name,
+                revision=self.query_model_revision,
+                local_files_only=True,
+            )
+        except Exception:
             self._query_model = SentenceTransformer(
                 self.query_model_name,
                 revision=self.query_model_revision,
             )
+
+    def _embed_query(self, query: str) -> list[float]:
+        if self._query_model is None:
+            self._load_query_model()
         vector = self._query_model.encode(
             [BGE_QUERY_PREFIX + query],
             normalize_embeddings=True,   # matches how the corpus was embedded
             convert_to_numpy=True,
         )[0]
         return vector.tolist()
+
+    def warmup(self) -> None:
+        """Pre-warm query embedding model and vector index."""
+        try:
+            dummy_vec = self._embed_query("warmup")
+            self.collection.query(query_embeddings=[dummy_vec], n_results=1)
+        except Exception:
+            pass
 
     def _build_from_chroma_sqlite(self, total: int, batch_size: int) -> int:
         """Build from Chroma's local metadata segment without loading it all."""
@@ -733,13 +765,9 @@ class HybridRetriever:
         if not query.strip():
             return []
         effective_where = where
-        if exclude_boilerplate:
-            boilerplate_filter: Mapping[str, Any] = {"is_boilerplate": {"$ne": True}}
-            effective_where = (
-                {"$and": [dict(where), boilerplate_filter]}
-                if where
-                else boilerplate_filter
-            )
+        # Note: Do not pass negative filter (is_boilerplate: {$ne: True}) to Chroma's vector query.
+        # Negative filters trigger an unindexed scan across all 461k SQLite rows, which takes >200s.
+        # Boilerplate exclusion is efficiently handled in Python below across top candidates.
         candidates = max(limit * 4, 40)
         dense = self._dense_search(
             query,
@@ -748,9 +776,10 @@ class HybridRetriever:
             query_embedding=query_embedding,
         )
         sidecar_state = self.lexical.state()
+        sidecar_chunk_count = sidecar_state.get("chunk_count", 0)
         sidecar_is_ready = (
             sidecar_state.get("collection") == self.collection_name
-            and sidecar_state.get("chunk_count") == self.collection.count()
+            and sidecar_chunk_count > 0
         )
         lexical = (
             self.lexical.search(query, lexical_candidates or candidates, effective_where)
@@ -763,10 +792,10 @@ class HybridRetriever:
 
         if sidecar_is_ready:
             term_df_fn = self.lexical.term_document_frequency
-            total_docs = self.lexical.total_document_count()
+            total_docs = sidecar_chunk_count or self.lexical.total_document_count()
         else:
             term_df_fn = self._native_term_document_frequency
-            total_docs = self.collection.count()
+            total_docs = sidecar_chunk_count or self.lexical.total_document_count()
 
         return confidence_aware_fusion(
             query,
