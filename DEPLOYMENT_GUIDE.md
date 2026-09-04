@@ -118,6 +118,27 @@ override.
 - A pending embedding journal is retried automatically on the next run.
 - Maintenance locks older than 18 hours are treated as stale and recovered.
 - Run `backup.ps1` before upgrades or enabling expiry archival.
+
+## Manual weekly or fortnightly expiry cleanup
+
+First generate a read-only report:
+
+```powershell
+.\weekly_expiry_cleanup.ps1
+```
+
+After reviewing the active/expired counts, stop the portal and explicitly apply
+the cleanup:
+
+```powershell
+.\weekly_expiry_cleanup.ps1 -Apply
+```
+
+Type `APPLY` when prompted. Expired PDFs are moved into `downloads\expired`,
+their chunks and vectors are removed from search, and the lexical index is
+rebuilt. The operation refuses zero or implausibly few active GeM results and
+blocks removal of more than 25% of the local corpus without separate manual
+review.
 - Run `disable_automation.ps1` before moving or uninstalling the directory.
 - Disabling automation never deletes PDFs, chunks, vectors, or backups.
 - Run `.\.venv\Scripts\python.exe .\refresh_boilerplate.py` monthly, or after a

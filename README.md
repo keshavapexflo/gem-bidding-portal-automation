@@ -61,6 +61,7 @@ Do not combine `--resume` with `--reset` or `--sync-file`.
 - `initialize_phase1.ps1` - initial download, chunk, embed, boilerplate and lexical build.
 - `start_portal.ps1` - start the Streamlit search application.
 - `run_maintenance.ps1` - manually run incremental maintenance.
+- `weekly_expiry_cleanup.ps1` - report and optionally archive bids no longer listed as ongoing.
 - `enable_automation.ps1` - install the daily Windows scheduled task.
 - `disable_automation.ps1` - remove only the scheduled task.
 - `validate.ps1` - perform non-destructive integrity checks.
