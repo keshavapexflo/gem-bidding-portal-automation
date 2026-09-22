@@ -808,6 +808,95 @@ class HybridRetriever:
             lexical_weight=lexical_weight,
         )[:limit]
 
+    def rerank(
+        self,
+        query: str,
+        results: list[SearchResult],
+        top_k: int = 10,
+        model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    ) -> list[SearchResult]:
+        """Rerank candidate SearchResults using a Cross-Encoder transformer model."""
+        if not results:
+            return []
+
+        try:
+            if not hasattr(self, "_cross_encoder") or self._cross_encoder is None:
+                from sentence_transformers import CrossEncoder
+                self._cross_encoder = CrossEncoder(model_name)
+
+            pairs = [[query, res.text] for res in results]
+            scores = self._cross_encoder.predict(pairs)
+
+            reranked = []
+            for res, score in zip(results, scores):
+                reranked.append(
+                    SearchResult(
+                        chunk_id=res.chunk_id,
+                        text=res.text,
+                        metadata=res.metadata,
+                        score=float(score),
+                        dense_rank=res.dense_rank,
+                        lexical_rank=res.lexical_rank,
+                    )
+                )
+
+            reranked.sort(key=lambda x: x.score, reverse=True)
+            return reranked[:top_k]
+        except Exception as e:
+            print(f"Cross-Encoder reranking fallback: {e}")
+            return results[:top_k]
+
+    def search_by_bid_id(self, pattern: str, limit: int = 15) -> list[SearchResult]:
+        """Strict metadata lookup for bids matching a Bid ID substring or numeric pattern."""
+        clean_pattern = pattern.strip()
+        if not clean_pattern:
+            return []
+
+        try:
+            source = self.chroma_path / "chroma.sqlite3"
+            uri = f"file:{source.resolve().as_posix()}?mode=ro"
+            with closing(sqlite3.connect(uri, uri=True)) as db:
+                db.row_factory = sqlite3.Row
+                rows = db.execute(
+                    "SELECT DISTINCT string_value AS bid_id "
+                    "FROM embedding_metadata "
+                    "WHERE key = 'bid_id' AND string_value LIKE ? "
+                    "LIMIT ?",
+                    (f"%{clean_pattern}%", limit),
+                ).fetchall()
+
+                matching_bid_ids = [r["bid_id"] for r in rows]
+
+                if matching_bid_ids:
+                    results = []
+                    for b_id in matching_bid_ids:
+                        try:
+                            chroma_res = self.collection.get(
+                                where={"bid_id": b_id},
+                                limit=1,
+                                include=["documents", "metadatas"],
+                            )
+                            if chroma_res and chroma_res["ids"]:
+                                results.append(
+                                    SearchResult(
+                                        chunk_id=chroma_res["ids"][0],
+                                        text=chroma_res["documents"][0] if chroma_res["documents"] else "",
+                                        metadata=chroma_res["metadatas"][0] if chroma_res["metadatas"] else {},
+                                        score=1.0,
+                                    )
+                                )
+                        except Exception:
+                            continue
+                    if results:
+                        return results
+        except Exception as e:
+            print(f"Direct bid_id SQLite search fallback: {e}")
+
+        return self.search(clean_pattern, limit=limit, exclude_boilerplate=False)
+
+
+
+
 
 def _format_result(result: SearchResult) -> dict[str, Any]:
     return {

@@ -83,6 +83,15 @@ def initialise(args: argparse.Namespace) -> None:
 
 
 def rebuild_index(args: argparse.Namespace) -> None:
+    # --lexical-only: skip re-embedding, just rebuild the BM25 sidecar from
+    # the existing Chroma collection. Useful when embeddings are already
+    # present but the lexical index is missing or corrupted.
+    if args.lexical_only:
+        print("Rebuilding lexical index from existing Chroma collection...", flush=True)
+        indexed = HybridRetriever(DEFAULT_CHROMA_PATH, DEFAULT_COLLECTION).build_lexical_index(rebuild=True)
+        print(f"Lexical index built: {indexed:,} chunks indexed.", flush=True)
+        return
+
     if not DEFAULT_INPUT.is_file():
         raise SystemExit(f"Chunk file not found: {DEFAULT_INPUT}")
     build_embeddings(Namespace(
@@ -127,6 +136,12 @@ def main() -> None:
 
     rebuild_parser = subparsers.add_parser("rebuild-index", help="Rebuild Chroma from bid_chunks.json.")
     rebuild_parser.add_argument("--batch-size", type=int, default=64)
+    rebuild_parser.add_argument(
+        "--lexical-only",
+        action="store_true",
+        help="Only rebuild the BM25 lexical sidecar from the existing Chroma collection. "
+             "Skips re-embedding — use this when embeddings are already present.",
+    )
     rebuild_parser.set_defaults(handler=rebuild_index)
 
     expiry_parser = subparsers.add_parser("expiry-report", help="Scan expiry without changing local data.")

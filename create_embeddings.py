@@ -249,11 +249,10 @@ def build_embeddings(args: argparse.Namespace) -> int:
     if args.reset:
         try:
             client.delete_collection(args.collection)
-        except ValueError:
-            # Chroma raises ValueError when the requested collection is absent.
-            pass
-        else:
             print(f"Deleted existing collection: {args.collection}", flush=True)
+        except Exception:
+            # Collection does not exist yet — nothing to delete.
+            pass
 
     # Embeddings are supplied explicitly below.  This mirrors HybridRetriever,
     # which supplies its own query vectors and does not use Chroma's default EF.
