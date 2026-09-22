@@ -219,19 +219,121 @@ STRICT RULES:
 - Be objective, clear, and actionable."""
 
 
-# ── Query Expansion ───────────────────────────────────────────────────
+# ── Local Synonym Dictionary ──────────────────────────────────────────
+
+# Instant, Ollama-free expansion for common government procurement terms.
+# Keys are lowercased. Values are lists of alternative search terms.
+PROCUREMENT_SYNONYMS: dict[str, list[str]] = {
+    # Electronics & Electrical
+    "pcb": ["printed circuit board", "PCBA", "circuit board assembly", "PCB assembly"],
+    "pcba": ["printed circuit board assembly", "PCB", "circuit board"],
+    "smps": ["switched mode power supply", "SMPS power supply", "power supply unit"],
+    "fpga": ["field programmable gate array", "programmable logic device"],
+    "ups": ["uninterruptible power supply", "UPS system", "power backup"],
+    "led": ["light emitting diode", "LED light", "LED luminaire", "LED fitting"],
+    "lcd": ["liquid crystal display", "LCD monitor", "LCD screen"],
+    "cctv": ["closed circuit television", "surveillance camera", "CCTV camera", "video surveillance"],
+    "ac": ["air conditioner", "air conditioning", "split AC", "AC unit"],
+    "inverter": ["power inverter", "solar inverter", "inverter battery"],
+    "transformer": ["power transformer", "distribution transformer", "electrical transformer"],
+    "cable": ["electrical cable", "power cable", "cable wire", "conductor cable"],
+    "battery": ["battery cell", "lead acid battery", "lithium battery", "rechargeable battery"],
+    "charger": ["battery charger", "SMPS charger", "charging unit"],
+    "harness": ["wiring harness", "cable harness", "wire assembly"],
+
+    # Vehicles & Defence
+    "brv": ["bullet resistant vehicle", "bulletproof vehicle", "armored vehicle", "armoured vehicle"],
+    "lmv": ["light motor vehicle", "light vehicle", "LMV vehicle"],
+    "vehicle": ["motor vehicle", "transport vehicle", "utility vehicle"],
+    "armored": ["armoured", "bullet resistant", "bulletproof", "ballistic protection"],
+    "armoured": ["armored", "bullet resistant", "bulletproof", "ballistic protection"],
+
+    # IT & Software
+    "it": ["information technology", "IT services", "IT infrastructure"],
+    "software": ["software application", "software solution", "custom software", "software development"],
+    "server": ["rack server", "tower server", "blade server", "server hardware"],
+    "computer": ["desktop computer", "personal computer", "PC", "workstation"],
+    "laptop": ["notebook computer", "portable computer", "laptop computer"],
+    "printer": ["laser printer", "inkjet printer", "multifunction printer", "MFP"],
+    "router": ["network router", "wifi router", "wireless router"],
+    "switch": ["network switch", "ethernet switch", "managed switch"],
+    "firewall": ["network firewall", "firewall appliance", "UTM firewall"],
+
+    # Office & Furniture
+    "furniture": ["office furniture", "steel furniture", "modular furniture"],
+    "chair": ["office chair", "revolving chair", "executive chair"],
+    "table": ["office table", "work table", "conference table"],
+
+    # Medical
+    "ppe": ["personal protective equipment", "PPE kit", "safety equipment"],
+    "ventilator": ["medical ventilator", "ICU ventilator", "breathing apparatus"],
+    "monitor": ["patient monitor", "vital signs monitor", "multi-parameter monitor"],
+
+    # General Procurement
+    "amc": ["annual maintenance contract", "AMC service", "maintenance contract"],
+    "manpower": ["manpower supply", "outsourced manpower", "contractual manpower", "human resource supply"],
+    "stationery": ["office stationery", "stationery items", "office supplies"],
+    "uniform": ["uniform supply", "uniform stitching", "livery"],
+    "cleaning": ["cleaning service", "housekeeping", "janitorial service", "sanitation"],
+    "security": ["security guard", "security service", "security manpower", "guarding service"],
+    "catering": ["catering service", "mess service", "food supply"],
+    "solar": ["solar panel", "solar power plant", "solar module", "photovoltaic"],
+    "pump": ["water pump", "submersible pump", "centrifugal pump", "motor pump"],
+    "pipe": ["GI pipe", "PVC pipe", "HDPE pipe", "pipeline"],
+    "cement": ["OPC cement", "PPC cement", "portland cement"],
+    "steel": ["mild steel", "TMT bar", "structural steel", "MS steel"],
+    "tyre": ["tyre", "tire", "vehicle tyre", "rubber tyre"],
+    "tire": ["tyre", "tire", "vehicle tyre", "rubber tyre"],
+    "oil": ["lubricant oil", "engine oil", "hydraulic oil", "lubricating oil"],
+    "paint": ["wall paint", "emulsion paint", "enamel paint", "industrial paint"],
+}
+
+
+def local_expand_query(query: str) -> list[str]:
+    """Expand a query using the local synonym dictionary. Instant, no LLM needed."""
+    query_lower = query.strip().lower()
+    terms = [query]
+
+    # Exact match on the full query
+    if query_lower in PROCUREMENT_SYNONYMS:
+        for syn in PROCUREMENT_SYNONYMS[query_lower]:
+            if syn.lower() != query_lower:
+                terms.append(syn)
+
+    # Also check individual words in multi-word queries
+    words = re.findall(r"[A-Za-z0-9]+", query)
+    for word in words:
+        word_lower = word.lower()
+        if word_lower != query_lower and word_lower in PROCUREMENT_SYNONYMS:
+            for syn in PROCUREMENT_SYNONYMS[word_lower]:
+                if syn.lower() not in {t.lower() for t in terms}:
+                    terms.append(syn)
+
+    return terms[:8]  # cap at 8 terms to avoid search explosion
+
+
+# ── Query Expansion (Hybrid: local + LLM) ────────────────────────────
 
 def expand_query(query: str, model: str = DEFAULT_MODEL) -> list[str]:
-    """Use Qwen to expand a short query into related procurement terms."""
+    """Expand a query using local synonyms first, then optionally enhance with LLM.
+
+    The local dictionary provides instant, reliable expansion for common
+    government procurement terms (PCB → printed circuit board, etc.).
+    The LLM can add domain-specific terms the dictionary doesn't cover.
+    """
+    # Step 1: Always start with local synonyms (instant, no Ollama needed)
+    base_terms = local_expand_query(query)
+
+    # Step 2: Try LLM enhancement if available
     prompt = f"""You are a procurement search expert for Indian government tenders (GeM portal).
-Expand the following search query into 4-6 related technical terms or phrases that would appear in government bid documents.
+Expand the following search query into 3-5 additional related technical terms or phrases that would appear in government bid documents.
 
 Rules:
-- Always include the original term
-- Include full forms (PCB → printed circuit board, FPGA → field programmable gate array)
-- Include common abbreviations and variants used in Indian government tenders
-- Include closely related procurement terms
-- Return ONLY a JSON array of strings, no explanation, no markdown
+- Do NOT repeat the original query or these already-known terms: {json.dumps(base_terms)}
+- Include full forms of abbreviations
+- Include common variants used in Indian government tenders
+- Include closely related procurement categories
+- Return ONLY a JSON array of strings, no explanation, no markdown, no thinking
 
 Query: "{query}"
 
@@ -245,7 +347,7 @@ Output (JSON array only):"""
             "options": {
                 "temperature": 0.1,
                 "num_ctx": 2048,
-                "num_predict": 200,
+                "num_predict": 256,
             },
         }
         resp = requests.post(
@@ -256,18 +358,22 @@ Output (JSON array only):"""
         resp.raise_for_status()
         content = resp.json().get("message", {}).get("content", "").strip()
 
+        # Strip <think>...</think> blocks that Qwen 3.x wraps around its reasoning
+        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
         match = re.search(r'\[.*?\]', content, re.DOTALL)
         if match:
-            terms = json.loads(match.group())
-            if isinstance(terms, list) and terms:
-                seen: set[str] = set()
-                result: list[str] = []
-                for t in [query] + [str(x).strip() for x in terms]:
-                    if t and t.lower() not in seen:
-                        seen.add(t.lower())
-                        result.append(t)
-                return result[:6]
-    except Exception:
-        pass
+            llm_terms = json.loads(match.group())
+            if isinstance(llm_terms, list):
+                seen = {t.lower() for t in base_terms}
+                for t in llm_terms:
+                    t_str = str(t).strip()
+                    if t_str and t_str.lower() not in seen:
+                        seen.add(t_str.lower())
+                        base_terms.append(t_str)
+    except requests.ConnectionError:
+        pass  # Ollama not running — local synonyms are sufficient
+    except Exception as exc:
+        print(f"[QueryExpansion] LLM enhancement failed (using local synonyms): {exc}")
 
-    return [query]
+    return base_terms[:8]

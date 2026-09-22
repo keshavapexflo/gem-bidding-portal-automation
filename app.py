@@ -22,6 +22,7 @@ from llm_advisor import (
     extract_full_pdf_text,
     build_matchmaker_prompt,
     expand_query,
+    local_expand_query,
 )
 import streamlit as st
 
@@ -388,85 +389,115 @@ with tab_search:
   limit = st.slider("Result Limit", min_value=1, max_value=100, value=10)
   search_button = st.button("Search")
 
-if "search_results" not in st.session_state:
-  st.session_state.search_results = None
+  if "search_results" not in st.session_state:
+    st.session_state.search_results = None
 
-if search_button:
-  if not query.strip():
-    st.warning("Please enter a non-empty search query.")
-  elif not retriever:
-    st.error("Retriever is not initialized.")
-  else:
-    where_filter = None
-    with st.spinner("Searching and ranking results..."):
-      try:
-        fetch_limit = limit * 3 if (use_reranker or bid_start_date or bid_end_date) else limit
+  if search_button:
+    if not query.strip():
+      st.warning("Please enter a non-empty search query.")
+    elif not retriever:
+      st.error("Retriever is not initialized.")
+    else:
+      where_filter = None
+      with st.spinner("Searching and ranking results..."):
+        try:
+          fetch_limit = limit * 3 if (use_reranker or bid_start_date or bid_end_date) else limit
 
-        # ── Query Expansion ──────────────────────────────────────────
-        search_terms = [query]
-        if use_query_expansion and ollama_status["ok"]:
-          with st.spinner("🧠 Expanding query with AI..."):
-            search_terms = expand_query(query)
-          if len(search_terms) > 1:
-            st.caption(f"🧠 **Query expanded to:** {', '.join(f'`{t}`' for t in search_terms)}")
+          # ── Bid ID Detection ──────────────────────────────────────────
+          is_bid_id_query = bool(re.fullmatch(r"GEM/\d{4}/[BR]/\d+", query.strip(), flags=re.IGNORECASE))
+          if is_bid_id_query:
+            results = search_by_bid_id(retriever, query, limit=fetch_limit)
+            if results:
+              st.caption(f"🔎 **Bid ID detected** — showing direct metadata match for `{query.strip()}`")
+          else:
+            # ── Query Expansion ──────────────────────────────────────────
+            search_terms = [query]
+            if use_query_expansion:
+              if ollama_status["ok"]:
+                with st.spinner("🧠 Expanding query with AI..."):
+                  search_terms = expand_query(query)
+              else:
+                # LLM unavailable — use local synonym dictionary only
+                search_terms = local_expand_query(query)
+              if len(search_terms) > 1:
+                st.caption(f"🧠 **Query expanded to:** {', '.join(f'`{t}`' for t in search_terms)}")
 
-        # Run search for each term and merge
-        seen_chunk_ids: set[str] = set()
-        merged_results = []
-        for term in search_terms:
-          term_results = retriever.search(term, limit=fetch_limit, where=where_filter, exclude_boilerplate=exclude_boilerplate, rrf_k=rrf_k, dense_weight=dense_weight, lexical_weight=lexical_weight)
-          for r in term_results:
-            if r.chunk_id not in seen_chunk_ids:
-              seen_chunk_ids.add(r.chunk_id)
-              merged_results.append(r)
-        merged_results.sort(key=lambda r: r.score, reverse=True)
-        results = merged_results
+            # Run search for each term and merge
+            seen_chunk_ids: set[str] = set()
+            merged_results = []
+            for term in search_terms:
+              term_results = retriever.search(term, limit=fetch_limit, where=where_filter, exclude_boilerplate=exclude_boilerplate, rrf_k=rrf_k, dense_weight=dense_weight, lexical_weight=lexical_weight)
+              for r in term_results:
+                if r.chunk_id not in seen_chunk_ids:
+                  seen_chunk_ids.add(r.chunk_id)
+                  merged_results.append(r)
+            merged_results.sort(key=lambda r: r.score, reverse=True)
 
-        if use_reranker and results:
-          results = retriever.rerank(query, results, top_k=limit)
+            # Bid-level deduplication: keep best-scoring chunk per bid
+            seen_bid_ids_dedup: dict[str, SearchResult] = {}
+            deduped_results: list[SearchResult] = []
+            for r in merged_results:
+              bid_id = r.metadata.get("bid_id", r.chunk_id)
+              if bid_id not in seen_bid_ids_dedup:
+                seen_bid_ids_dedup[bid_id] = r
+                deduped_results.append(r)
+              elif r.score > seen_bid_ids_dedup[bid_id].score:
+                # Replace with higher-scoring chunk for same bid
+                deduped_results = [r if x is seen_bid_ids_dedup[bid_id] else x for x in deduped_results]
+                seen_bid_ids_dedup[bid_id] = r
+            results = deduped_results
 
-        if results and (bid_start_date or bid_end_date):
-          filtered_results = []
-          for res in results:
-            keep = True
-            meta = res.metadata
-            pub_date_raw = meta.get("published_date") or meta.get("bid_start_date") or meta.get("date")
-            if bid_start_date and pub_date_raw:
-              try:
-                doc_start = datetime.strptime(str(pub_date_raw).split("T")[0], "%Y-%m-%d").date()
-                if doc_start < bid_start_date:
-                  keep = False
-              except Exception:
-                pass
-            end_date_raw = meta.get("end_date_to_submit_bid") or meta.get("bid_end_date")
-            if bid_end_date and end_date_raw:
-              try:
-                clean_end = str(end_date_raw).split(" ")[0]
-                fmt = "%Y-%m-%d" if len(clean_end.split("-")[0]) == 4 else "%d-%m-%Y"
-                doc_end = datetime.strptime(clean_end, fmt).date()
-                if doc_end > bid_end_date:
-                  keep = False
-              except Exception:
-                pass
-            if keep:
-              filtered_results.append(res)
-          results = filtered_results[:limit]
+            if use_reranker and results:
+              results = retriever.rerank(query, results, top_k=limit)
 
-        st.session_state.search_results = results
-        if not results:
-          st.info("No matching results found.")
-      except Exception as search_err:
-        st.error(f"Search failed: {search_err}")
-        st.code(traceback.format_exc())
+          # ── Date Filtering ───────────────────────────────────────────
+          if results and (bid_start_date or bid_end_date):
+            filtered_results = []
+            for res in results:
+              keep = True
+              meta = res.metadata
+              pub_date_raw = meta.get("published_date") or meta.get("bid_start_date") or meta.get("date")
+              if bid_start_date and pub_date_raw:
+                try:
+                  clean_start = str(pub_date_raw).split("T")[0].split(" ")[0]
+                  # Handle both YYYY-MM-DD and DD-MM-YYYY formats
+                  if len(clean_start.split("-")[0]) == 4:
+                    doc_start = datetime.strptime(clean_start, "%Y-%m-%d").date()
+                  else:
+                    doc_start = datetime.strptime(clean_start, "%d-%m-%Y").date()
+                  if doc_start < bid_start_date:
+                    keep = False
+                except Exception:
+                  pass
+              end_date_raw = meta.get("end_date_to_submit_bid") or meta.get("bid_end_date")
+              if bid_end_date and end_date_raw:
+                try:
+                  clean_end = str(end_date_raw).split(" ")[0]
+                  fmt = "%Y-%m-%d" if len(clean_end.split("-")[0]) == 4 else "%d-%m-%Y"
+                  doc_end = datetime.strptime(clean_end, fmt).date()
+                  if doc_end > bid_end_date:
+                    keep = False
+                except Exception:
+                  pass
+              if keep:
+                filtered_results.append(res)
+            results = filtered_results[:limit]
 
-if st.session_state.search_results:
-  results = st.session_state.search_results
-  st.success(f"Showing {len(results)} matching chunks.")
+          st.session_state.search_results = results
+          if not results:
+            st.info("No matching results found.")
+        except Exception as search_err:
+          st.error(f"Search failed: {search_err}")
+          st.code(traceback.format_exc())
 
-  export_rows = build_export_rows(results)
-  csv_bytes = rows_to_csv_bytes(export_rows)
-  st.download_button(label=f"📊 Export {len(export_rows)} bid(s) to CSV", data=csv_bytes, file_name=f"gem_bids_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", key="export_csv_button")
-  st.caption(f"{len(results)} chunk(s) → {len(export_rows)} unique bid(s) in export.")
+  if st.session_state.search_results:
+    results = st.session_state.search_results
+    st.success(f"Showing {len(results)} matching chunks.")
+
+    export_rows = build_export_rows(results)
+    csv_bytes = rows_to_csv_bytes(export_rows)
+    st.download_button(label=f"📊 Export {len(export_rows)} bid(s) to CSV", data=csv_bytes, file_name=f"gem_bids_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", key="export_csv_button")
+    st.caption(f"{len(results)} chunk(s) → {len(export_rows)} unique bid(s) in export.")
 
   st.markdown("##### 🔄 Check for Extensions on GeM (Live)")
   st.caption("Queries the live GeM portal for each bid and compares its current end date.")
@@ -684,10 +715,31 @@ with tab_matchmaker:
       with st.spinner("Searching candidate bids across database..."):
         try:
           search_query = domain_filter.strip() if domain_filter.strip() else company_profile_input.split("\n")[0]
-          raw_candidates = retriever.search(search_query, limit=pool_size * 3, exclude_boilerplate=True)
+
+          # Apply query expansion to matchmaker search too
+          matchmaker_search_terms = [search_query]
+          if use_query_expansion and domain_filter.strip():
+            if ollama_status["ok"]:
+              matchmaker_search_terms = expand_query(search_query)
+            else:
+              matchmaker_search_terms = local_expand_query(search_query)
+            if len(matchmaker_search_terms) > 1:
+              st.caption(f"🧠 **Domain expanded to:** {', '.join(f'`{t}`' for t in matchmaker_search_terms)}")
+
+          # Search each expanded term and merge
+          seen_match_chunks: set[str] = set()
+          all_match_results = []
+          for mterm in matchmaker_search_terms:
+            mterm_results = retriever.search(mterm, limit=pool_size * 3, exclude_boilerplate=True)
+            for r in mterm_results:
+              if r.chunk_id not in seen_match_chunks:
+                seen_match_chunks.add(r.chunk_id)
+                all_match_results.append(r)
+          all_match_results.sort(key=lambda r: r.score, reverse=True)
+
           seen_match_bids = set()
           candidate_bids = []
-          for res in raw_candidates:
+          for res in all_match_results:
             bid_id = res.metadata.get("bid_id", "N/A")
             if bid_id not in seen_match_bids:
               seen_match_bids.add(bid_id)

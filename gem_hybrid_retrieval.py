@@ -321,7 +321,7 @@ def _query_terms(query: str) -> list[str]:
     return [
         term.lower()
         for term in raw_terms
-        if term.lower() not in GENERIC_QUERY_TERMS and (len(term) >= 3 or term.isupper())
+        if term.lower() not in GENERIC_QUERY_TERMS and (len(term) >= 3 or (len(term) >= 2 and term.isupper()))
     ]
 
 
@@ -795,7 +795,7 @@ class HybridRetriever:
             total_docs = sidecar_chunk_count or self.lexical.total_document_count()
         else:
             term_df_fn = self._native_term_document_frequency
-            total_docs = sidecar_chunk_count or self.lexical.total_document_count()
+            total_docs = self.collection.count() or 1
 
         return confidence_aware_fusion(
             query,
