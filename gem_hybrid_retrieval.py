@@ -43,7 +43,8 @@ GENERIC_QUERY_TERMS = frozenset({
     "a", "an", "and", "as", "at", "by", "clearly", "details", "for", "from", "generic",
     "goods", "in", "item", "items", "not", "of", "on", "or", "per", "product", "products",
     "requirement", "required", "service", "services", "specified", "the", "to", "use", "with",
-    "category", "gem",
+    "category", "gem", "give", "me", "bid", "bids", "tender", "tenders", "related", "show",
+    "find", "search", "want", "need", "get", "list", "display", "looking",
 })
 
 

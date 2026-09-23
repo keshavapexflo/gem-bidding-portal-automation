@@ -289,19 +289,36 @@ PROCUREMENT_SYNONYMS: dict[str, list[str]] = {
 }
 
 
+def clean_conversational_query(query: str) -> str:
+    """Strip generic conversational prefixes and filler phrases to isolate the core technical subject."""
+    cleaned = query.strip()
+    # Strip common conversational patterns at start
+    patterns = [
+        r"^(?:give\s+me|show\s+me|find|search|get|list|display|i\s+need|i\s+want|looking\s+for)\s+",
+        r"^(?:all\s+)?(?:bids?|tenders?|contracts?)\s+(?:related\s+to|for|about|on|of|with)\s+",
+        r"^(?:related\s+to|for|about)\s+",
+    ]
+    for pat in patterns:
+        cleaned = re.sub(pat, "", cleaned, flags=re.IGNORECASE).strip()
+    return cleaned if cleaned else query.strip()
+
+
 def local_expand_query(query: str) -> list[str]:
     """Expand a query using the local synonym dictionary. Instant, no LLM needed."""
-    query_lower = query.strip().lower()
+    cleaned_query = clean_conversational_query(query)
+    query_lower = cleaned_query.lower()
     terms = [query]
+    if cleaned_query != query and cleaned_query not in terms:
+        terms.append(cleaned_query)
 
-    # Exact match on the full query
+    # Exact match on the cleaned query
     if query_lower in PROCUREMENT_SYNONYMS:
         for syn in PROCUREMENT_SYNONYMS[query_lower]:
             if syn.lower() != query_lower:
                 terms.append(syn)
 
     # Also check individual words in multi-word queries
-    words = re.findall(r"[A-Za-z0-9]+", query)
+    words = re.findall(r"[A-Za-z0-9]+", cleaned_query)
     for word in words:
         word_lower = word.lower()
         if word_lower != query_lower and word_lower in PROCUREMENT_SYNONYMS:
