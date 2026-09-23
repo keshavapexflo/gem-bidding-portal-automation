@@ -321,9 +321,11 @@ def local_expand_query(query: str) -> list[str]:
     """Expand a query using the local synonym dictionary. Instant, no LLM needed."""
     cleaned_query = clean_conversational_query(query)
     query_lower = cleaned_query.lower()
-    terms = [query]
-    if cleaned_query != query and cleaned_query not in terms:
-        terms.append(cleaned_query)
+    # Use the cleaned query as primary — the raw conversational form
+    # ("show me bids related to X") shifts dense embeddings toward generic
+    # bid language and duplicates work. Only fall back to raw if cleaning
+    # yields nothing new.
+    terms = [cleaned_query if cleaned_query else query]
 
     def _add(term: str) -> None:
         if term.lower() not in {t.lower() for t in terms}:
@@ -346,13 +348,40 @@ def local_expand_query(query: str) -> list[str]:
     # Reverse lookup: if the query contains a known full phrase, add its
     # abbreviation key plus sibling synonyms.
     # Handles "printed circuit board" -> "PCB"/"PCBA", etc.
-    for phrase, keys in _REVERSE_SYNONYMS.items():
-        if phrase in query_lower:
-            for key in keys:
-                _add(key)
-                for sib in PROCUREMENT_SYNONYMS.get(key, []):
-                    _add(sib)
+    # Only the LONGEST matching phrases trigger, on word boundaries, so that
+    # "printed circuit board" does not also trigger via its substring
+    # "circuit board" (which would pull in generic circuit/breaker/board junk).
+    # Standalone generic fragments are never emitted as search terms.
+    _GENERIC_FRAGMENTS = {"circuit", "board", "circuit board"}
+    candidates: list[str] = []
+    for phrase in _REVERSE_SYNONYMS:
+        if phrase in _GENERIC_FRAGMENTS:
+            continue
+        if re.search(rf"\b{re.escape(phrase)}\b", query_lower):
+            candidates.append(phrase)
+    # Drop any candidate that is a substring of a longer matched phrase.
+    candidates.sort(key=len, reverse=True)
+    longest_only: list[str] = []
+    for cand in candidates:
+        if not any(cand != longer and cand in longer for longer in longest_only):
+            longest_only.append(cand)
+    for phrase in longest_only:
+        for key in _REVERSE_SYNONYMS[phrase]:
+            _add(key)
+            for sib in PROCUREMENT_SYNONYMS.get(key, []):
+                if sib.lower() in _GENERIC_FRAGMENTS:
+                    continue
+                # Never add back a term that is itself a mere substring of the
+                # query's matched long phrase — e.g. don't add lone
+                # "circuit board" when the query already was
+                # "printed circuit board".
+                if sib.lower() in query_lower and len(sib) < len(phrase):
+                    continue
+                _add(sib)
 
+    # Drop standalone generic fragments that match half the corpus
+    # ("board" hits PVC/sun boards, "circuit" hits breakers).
+    terms = [t for t in terms if t.lower() not in _GENERIC_FRAGMENTS]
     return terms[:8]  # cap at 8 terms to avoid search explosion
 
 

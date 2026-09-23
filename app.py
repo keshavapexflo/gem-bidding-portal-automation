@@ -428,15 +428,22 @@ with tab_search:
                 st.caption(f"🧠 **Query expanded to:** {', '.join(f'`{t}`' for t in search_terms)}")
 
             # Run search for each term and merge
+            # Boost chunks with LEXICAL support from multiple expansion terms
+            # (true PCB hits match "pcb" + "PCB assembly" + ..., while junk
+            # like "PVC board" matches only one generic term; dense-only
+            # neighbours overlap across all terms and must NOT count).
             seen_chunk_ids: set[str] = set()
             merged_results = []
+            support_count: dict[str, int] = {}
             for term in search_terms:
               term_results = retriever.search(term, limit=fetch_limit, where=where_filter, exclude_boilerplate=exclude_boilerplate, rrf_k=rrf_k, dense_weight=dense_weight, lexical_weight=lexical_weight)
               for r in term_results:
+                if r.lexical_rank is not None:
+                  support_count[r.chunk_id] = support_count.get(r.chunk_id, 0) + 1
                 if r.chunk_id not in seen_chunk_ids:
                   seen_chunk_ids.add(r.chunk_id)
                   merged_results.append(r)
-            merged_results.sort(key=lambda r: r.score, reverse=True)
+            merged_results.sort(key=lambda r: (support_count.get(r.chunk_id, 0), r.score), reverse=True)
 
             # Bid-level deduplication: keep best-scoring chunk per bid
             seen_bid_ids_dedup: dict[str, SearchResult] = {}
@@ -737,13 +744,16 @@ with tab_matchmaker:
           # Search each expanded term and merge
           seen_match_chunks: set[str] = set()
           all_match_results = []
+          match_support: dict[str, int] = {}
           for mterm in matchmaker_search_terms:
             mterm_results = retriever.search(mterm, limit=pool_size * 3, exclude_boilerplate=True)
             for r in mterm_results:
+              if r.lexical_rank is not None:
+                match_support[r.chunk_id] = match_support.get(r.chunk_id, 0) + 1
               if r.chunk_id not in seen_match_chunks:
                 seen_match_chunks.add(r.chunk_id)
                 all_match_results.append(r)
-          all_match_results.sort(key=lambda r: r.score, reverse=True)
+          all_match_results.sort(key=lambda r: (match_support.get(r.chunk_id, 0), r.score), reverse=True)
 
           seen_match_bids = set()
           candidate_bids = []
