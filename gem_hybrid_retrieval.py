@@ -825,10 +825,17 @@ class HybridRetriever:
         # dense embedding model is least trustworthy on its own -- it tends to
         # match on surrounding procurement boilerplate rather than the
         # acronym itself. For these queries, drop dense-only matches (no
-        # lexical support at all) rather than let them ride on embedding
-        # similarity alone.
+        # lexical support) that are not near-top nearest neighbours. A
+        # genuinely close dense match (top-3) is kept even without lexical
+        # support, since imperfect BM25/FTS tokenization can miss a real hit;
+        # weaker dense-only matches (rank 4+) are the ones that turned out to
+        # be false positives like "PCC"/"PCS" bids surfacing for a "PCB" query.
         if is_acronym_query(query):
-            fused = [result for result in fused if result.lexical_rank is not None]
+            fused = [
+                result for result in fused
+                if result.lexical_rank is not None
+                or (result.dense_rank is not None and result.dense_rank <= 3)
+            ]
 
         return fused[:limit]
 

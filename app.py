@@ -406,7 +406,7 @@ with tab_search:
       where_filter = None
       with st.spinner("Searching and ranking results..."):
         try:
-          fetch_limit = limit * 3 if (use_reranker or bid_start_date or bid_end_date) else limit
+          fetch_limit = limit * 5 if (use_reranker or bid_start_date or bid_end_date) else limit
 
           # ── Bid ID Detection ──────────────────────────────────────────
           is_bid_id_query = bool(re.fullmatch(r"GEM/\d{4}/[BR]/\d+", query.strip(), flags=re.IGNORECASE))
@@ -453,7 +453,7 @@ with tab_search:
             results = deduped_results
 
             if use_reranker and results:
-              results = retriever.rerank(query, results, top_k=limit, min_score=0.0)
+              results = retriever.rerank(query, results, top_k=limit)
 
           # ── Date Filtering ───────────────────────────────────────────
           if results and (bid_start_date or bid_end_date):
@@ -756,7 +756,7 @@ with tab_matchmaker:
                 break
           if use_reranker and candidate_bids:
             sr_candidates = [SearchResult(chunk_id=b["metadata"].get("bid_id", f"bid-{i}"), text=b["text"], metadata=b["metadata"], score=0.0) for i, b in enumerate(candidate_bids)]
-            reranked_sr = retriever.rerank(search_query, sr_candidates, top_k=pool_size, min_score=0.0)
+            reranked_sr = retriever.rerank(search_query, sr_candidates, top_k=pool_size)
             candidate_bids = [{"metadata": r.metadata, "text": r.text} for r in reranked_sr]
           else:
             candidate_bids = candidate_bids[:pool_size]
