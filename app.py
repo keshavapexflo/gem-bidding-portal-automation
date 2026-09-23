@@ -460,7 +460,11 @@ with tab_search:
             results = deduped_results
 
             if use_reranker and results:
-              results = retriever.rerank(query, results, top_k=limit)
+              # Rerank with expanded terms so the cross-encoder sees both
+              # forms ("PCB" + "printed circuit board"); ranking with the raw
+              # phrase alone demotes abbreviation bids it doesn't recognise.
+              rerank_query = " ".join(dict.fromkeys(search_terms[:4])) if len(search_terms) > 1 else query
+              results = retriever.rerank(rerank_query, results, top_k=limit)
 
           # ── Date Filtering ───────────────────────────────────────────
           if results and (bid_start_date or bid_end_date):
@@ -766,7 +770,8 @@ with tab_matchmaker:
                 break
           if use_reranker and candidate_bids:
             sr_candidates = [SearchResult(chunk_id=b["metadata"].get("bid_id", f"bid-{i}"), text=b["text"], metadata=b["metadata"], score=0.0) for i, b in enumerate(candidate_bids)]
-            reranked_sr = retriever.rerank(search_query, sr_candidates, top_k=pool_size)
+            mm_rerank_query = " ".join(dict.fromkeys(matchmaker_search_terms[:4])) if len(matchmaker_search_terms) > 1 else search_query
+            reranked_sr = retriever.rerank(mm_rerank_query, sr_candidates, top_k=pool_size)
             candidate_bids = [{"metadata": r.metadata, "text": r.text} for r in reranked_sr]
           else:
             candidate_bids = candidate_bids[:pool_size]
