@@ -303,6 +303,20 @@ def clean_conversational_query(query: str) -> str:
     return cleaned if cleaned else query.strip()
 
 
+# Reverse index: full phrase -> abbreviation key(s), so that searching the
+# full form also finds bids that only use the short form.
+# e.g. "printed circuit board" -> "pcb", "bullet resistant vehicle" -> "brv".
+_REVERSE_SYNONYMS: dict[str, list[str]] = {}
+for _key, _syns in PROCUREMENT_SYNONYMS.items():
+    for _syn in _syns:
+        _norm = _syn.lower().strip()
+        # Only index multi-word phrases and meaningful single words;
+        # single generic words would cause false-positive expansions.
+        if len(_norm) < 3:
+            continue
+        _REVERSE_SYNONYMS.setdefault(_norm, []).append(_key)
+
+
 def local_expand_query(query: str) -> list[str]:
     """Expand a query using the local synonym dictionary. Instant, no LLM needed."""
     cleaned_query = clean_conversational_query(query)
@@ -310,6 +324,10 @@ def local_expand_query(query: str) -> list[str]:
     terms = [query]
     if cleaned_query != query and cleaned_query not in terms:
         terms.append(cleaned_query)
+
+    def _add(term: str) -> None:
+        if term.lower() not in {t.lower() for t in terms}:
+            terms.append(term)
 
     # Exact match on the cleaned query
     if query_lower in PROCUREMENT_SYNONYMS:
@@ -323,8 +341,17 @@ def local_expand_query(query: str) -> list[str]:
         word_lower = word.lower()
         if word_lower != query_lower and word_lower in PROCUREMENT_SYNONYMS:
             for syn in PROCUREMENT_SYNONYMS[word_lower]:
-                if syn.lower() not in {t.lower() for t in terms}:
-                    terms.append(syn)
+                _add(syn)
+
+    # Reverse lookup: if the query contains a known full phrase, add its
+    # abbreviation key plus sibling synonyms.
+    # Handles "printed circuit board" -> "PCB"/"PCBA", etc.
+    for phrase, keys in _REVERSE_SYNONYMS.items():
+        if phrase in query_lower:
+            for key in keys:
+                _add(key)
+                for sib in PROCUREMENT_SYNONYMS.get(key, []):
+                    _add(sib)
 
     return terms[:8]  # cap at 8 terms to avoid search explosion
 
