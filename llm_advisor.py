@@ -343,54 +343,91 @@ def expand_query(query: str, model: str = DEFAULT_MODEL) -> list[str]:
 
     # Step 2: Try LLM enhancement if available
     prompt = f"""You are a procurement search expert for Indian government tenders (GeM portal).
-Expand the following search query into 3-5 additional related technical terms or phrases that would appear in government bid documents.
+
+Expand the following search query into 2-4 related technical terms or phrases
+that describe the SAME product, item, or specification as the original query.
 
 Rules:
-- Do NOT repeat the original query or these already-known terms: {json.dumps(base_terms)}
-- Include full forms of abbreviations
-- Include common variants used in Indian government tenders
-- Include closely related procurement categories
-- Return ONLY a JSON array of strings, no explanation, no markdown, no thinking
+- Always include the original term
+- Only add terms for the product/item itself: full forms of abbreviations
+  (PCB -> printed circuit board), synonyms, spec variants, and closely related
+  product names
+- Do NOT add generic administrative, financial, or contractual terms that
+  appear in almost every bid's terms & conditions — e.g. EMD, PBG, bid
+  guarantee, turnover, MSME, delivery period, warranty period — unless one of
+  those terms is literally what the original query is asking about
+- Do NOT add broad category words on their own (e.g. "equipment", "supply",
+  "goods") — every added term must be specific enough to only match bids
+  about this particular item
+- Do NOT repeat these already-known terms: {json.dumps(base_terms)}
+- Respond with ONLY a JSON object of the form {{"terms": ["...", "..."]}}.
+  No explanation, no markdown, no extra text.
 
 Query: "{query}"
+/no_think"""
 
-Output (JSON array only):"""
+    content = ""
 
     try:
         payload = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
             "stream": False,
+            "format": "json",
             "options": {
                 "temperature": 0.1,
                 "num_ctx": 2048,
-                "num_predict": 256,
+                "num_predict": 400,
             },
         }
+
         resp = requests.post(
             f"{OLLAMA_BASE}/api/chat",
             json=payload,
             timeout=30,
         )
         resp.raise_for_status()
+
         content = resp.json().get("message", {}).get("content", "").strip()
 
-        # Strip <think>...</think> blocks that Qwen 3.x wraps around its reasoning
-        content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+        # Strip <think>...</think> blocks that Qwen 3.x may return
+        content = re.sub(
+            r"<think>.*?</think>",
+            "",
+            content,
+            flags=re.DOTALL,
+        ).strip()
 
-        match = re.search(r'\[.*?\]', content, re.DOTALL)
-        if match:
-            llm_terms = json.loads(match.group())
-            if isinstance(llm_terms, list):
-                seen = {t.lower() for t in base_terms}
-                for t in llm_terms:
-                    t_str = str(t).strip()
-                    if t_str and t_str.lower() not in seen:
-                        seen.add(t_str.lower())
-                        base_terms.append(t_str)
+        parsed = json.loads(content)
+
+        # Expected format:
+        # {"terms": ["term1", "term2"]}
+        if isinstance(parsed, dict):
+            llm_terms = parsed.get("terms", [])
+        elif isinstance(parsed, list):
+            # Defensive support for models returning a raw JSON array
+            llm_terms = parsed
+        else:
+            llm_terms = []
+
+        if isinstance(llm_terms, list):
+            seen = {t.lower() for t in base_terms}
+
+            for term in llm_terms:
+                term_str = str(term).strip()
+
+                if term_str and term_str.lower() not in seen:
+                    seen.add(term_str.lower())
+                    base_terms.append(term_str)
+
     except requests.ConnectionError:
-        pass  # Ollama not running — local synonyms are sufficient
+        # Ollama not running — local synonyms are still sufficient
+        pass
+
     except Exception as exc:
-        print(f"[QueryExpansion] LLM enhancement failed (using local synonyms): {exc}")
+        print(
+            f"[QueryExpansion] LLM enhancement failed "
+            f"(using local synonyms): {exc!r}"
+        )
 
     return base_terms[:8]

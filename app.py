@@ -392,6 +392,11 @@ with tab_search:
   if "search_results" not in st.session_state:
     st.session_state.search_results = None
 
+  # Always initialize these so Streamlit reruns (e.g. from other widgets)
+  # never hit a NameError before the search block below runs.
+  results = st.session_state.search_results or []
+  export_rows = build_export_rows(results) if results else []
+
   if search_button:
     if not query.strip():
       st.warning("Please enter a non-empty search query.")
@@ -484,24 +489,27 @@ with tab_search:
             results = filtered_results[:limit]
 
           st.session_state.search_results = results
+          export_rows = build_export_rows(results) if results else []
           if not results:
             st.info("No matching results found.")
         except Exception as search_err:
           st.error(f"Search failed: {search_err}")
           st.code(traceback.format_exc())
 
-  if st.session_state.search_results:
-    results = st.session_state.search_results
+  if results:
     st.success(f"Showing {len(results)} matching chunks.")
 
-    export_rows = build_export_rows(results)
     csv_bytes = rows_to_csv_bytes(export_rows)
     st.download_button(label=f"📊 Export {len(export_rows)} bid(s) to CSV", data=csv_bytes, file_name=f"gem_bids_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv", mime="text/csv", key="export_csv_button")
     st.caption(f"{len(results)} chunk(s) → {len(export_rows)} unique bid(s) in export.")
 
   st.markdown("##### 🔄 Check for Extensions on GeM (Live)")
   st.caption("Queries the live GeM portal for each bid and compares its current end date.")
-  if st.button(f"Check {len(export_rows)} bid(s) for extensions", key="check_extensions_button"):
+  if st.button(
+      f"Check {len(export_rows)} bid(s) for extensions",
+      key="check_extensions_button",
+      disabled=not export_rows,
+  ):
     bid_stored_end_dates = {row["Bid ID"]: row["End date to submit bid"] for row in export_rows if row["Bid ID"] and row["Bid ID"] != "N/A"}
     progress_bar = st.progress(0, text="Starting live check...")
     def _update_progress(i, total, bid_number):
