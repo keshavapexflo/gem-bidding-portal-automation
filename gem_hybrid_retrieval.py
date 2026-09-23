@@ -459,6 +459,18 @@ BGE_QUERY_PREFIX = "Represent this sentence for searching relevant passages: "
 BGE_MODEL_REVISION = "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
 
 
+def is_acronym_query(query: str) -> bool:
+    """True when every meaningful query term is a short (<=4 char) token.
+
+    Short technical acronyms (PCB, PCC, PCS, EMD...) are exactly where the
+    dense embedding model is least reliable, since it leans on surrounding
+    boilerplate context rather than the acronym itself. Queries made up
+    entirely of such terms should not be trusted on dense-only matches.
+    """
+    terms = _query_terms(query)
+    return bool(terms) and all(len(term) <= 4 for term in terms)
+
+
 class HybridRetriever:
     def __init__(
         self,
@@ -798,7 +810,7 @@ class HybridRetriever:
             term_df_fn = self._native_term_document_frequency
             total_docs = self.collection.count() or 1
 
-        return confidence_aware_fusion(
+        fused = confidence_aware_fusion(
             query,
             dense,
             lexical,
@@ -807,7 +819,18 @@ class HybridRetriever:
             rrf_k=rrf_k,
             dense_weight=dense_weight,
             lexical_weight=lexical_weight,
-        )[:limit]
+        )
+
+        # Short acronym queries (PCB, PCC, PCS, EMD...) are exactly where the
+        # dense embedding model is least trustworthy on its own -- it tends to
+        # match on surrounding procurement boilerplate rather than the
+        # acronym itself. For these queries, drop dense-only matches (no
+        # lexical support at all) rather than let them ride on embedding
+        # similarity alone.
+        if is_acronym_query(query):
+            fused = [result for result in fused if result.lexical_rank is not None]
+
+        return fused[:limit]
 
     def rerank(
         self,
@@ -815,8 +838,16 @@ class HybridRetriever:
         results: list[SearchResult],
         top_k: int = 10,
         model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+        min_score: float | None = None,
     ) -> list[SearchResult]:
-        """Rerank candidate SearchResults using a Cross-Encoder transformer model."""
+        """Rerank candidate SearchResults using a Cross-Encoder transformer model.
+
+        ``min_score`` optionally drops candidates the cross-encoder itself
+        judged non-relevant, instead of always padding the response out to
+        ``top_k`` with mediocre matches. 0.0 is a reasonable floor for
+        ``ms-marco-MiniLM-L-6-v2``: it is the natural boundary between
+        "the model considers this relevant" and "it doesn't."
+        """
         if not results:
             return []
 
@@ -842,6 +873,10 @@ class HybridRetriever:
                 )
 
             reranked.sort(key=lambda x: x.score, reverse=True)
+
+            if min_score is not None:
+                reranked = [r for r in reranked if r.score >= min_score]
+
             return reranked[:top_k]
         except Exception as e:
             print(f"Cross-Encoder reranking fallback: {e}")
@@ -894,9 +929,6 @@ class HybridRetriever:
             print(f"Direct bid_id SQLite search fallback: {e}")
 
         return self.search(clean_pattern, limit=limit, exclude_boilerplate=False)
-
-
-
 
 
 def _format_result(result: SearchResult) -> dict[str, Any]:

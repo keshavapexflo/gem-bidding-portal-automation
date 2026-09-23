@@ -453,7 +453,7 @@ with tab_search:
             results = deduped_results
 
             if use_reranker and results:
-              results = retriever.rerank(query, results, top_k=limit)
+              results = retriever.rerank(query, results, top_k=limit, min_score=0.0)
 
           # ── Date Filtering ───────────────────────────────────────────
           if results and (bid_start_date or bid_end_date):
@@ -581,7 +581,7 @@ with tab_search:
         f'<span class="badge badge-none">Ministry: {escape(str(ministry))}</span>',
         f'<span class="badge badge-none">Published: {escape(str(start_date_str))}</span>',
         f'<span class="badge badge-none">End: {escape(str(end_date_str))}</span>',
-        f'<span class="badge badge-none">Fused Score: {score:.5f}</span>',
+        f'<span class="badge badge-none">{"Relevance Score (reranked)" if use_reranker else "Fused Score"}: {score:.5f}</span>',
         f'<span class="badge badge-none">Dense Rank: {dense_rank or "N/A"}</span>',
         f'<span class="badge badge-none">Lexical Rank: {lexical_rank or "N/A"}</span>',
     ]
@@ -756,7 +756,7 @@ with tab_matchmaker:
                 break
           if use_reranker and candidate_bids:
             sr_candidates = [SearchResult(chunk_id=b["metadata"].get("bid_id", f"bid-{i}"), text=b["text"], metadata=b["metadata"], score=0.0) for i, b in enumerate(candidate_bids)]
-            reranked_sr = retriever.rerank(search_query, sr_candidates, top_k=pool_size)
+            reranked_sr = retriever.rerank(search_query, sr_candidates, top_k=pool_size, min_score=0.0)
             candidate_bids = [{"metadata": r.metadata, "text": r.text} for r in reranked_sr]
           else:
             candidate_bids = candidate_bids[:pool_size]
